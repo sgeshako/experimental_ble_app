@@ -32,6 +32,9 @@
 #include "ble_lbs.h"
 #include "bsp.h"
 #include "ble_gap.h"
+#include "nrf_delay.h"
+#include "spi.h"
+#include "ble_ims.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -49,8 +52,8 @@
 #define ADVERTISING_LED_PIN             BSP_BOARD_LED_0                             /**< Is on when device is advertising. */
 #define CONNECTED_LED_PIN               BSP_BOARD_LED_1                             /**< Is on when device has connected. */
 
-#define LEDBUTTON_LED_PIN               BSP_BOARD_LED_2                             /**< LED to be toggled with the help of the LED Button Service. */
-#define LEDBUTTON_BUTTON_PIN            BSP_BUTTON_0                                /**< Button that will trigger the notification event with the LED Button Service */
+#define LEDBUTTON_LED_PIN               BSP_BOARD_LED_1                             /**< LED to be toggled with the help of the LED Button Service. */
+#define LEDBUTTON_BUTTON_PIN            BSP_BUTTON_1                                /**< Button that will trigger the notification event with the LED Button Service */
 
 #define DEVICE_NAME                     "Nordic_Blinky"                             /**< Name of device. Will be included in the advertising data. */
 
@@ -76,6 +79,21 @@
 
 static uint16_t                         m_conn_handle = BLE_CONN_HANDLE_INVALID;    /**< Handle of the current connection. */
 static ble_lbs_t                        m_lbs;                                      /**< LED Button Service instance. */
+static ble_ims_t                        m_ims;
+
+APP_TIMER_DEF(m_notification_timer_id);
+APP_TIMER_DEF(m_sampling_timer_id);
+static volatile uint16_t m_counter_value = 0;
+
+#define NOTIFICATION_INTERVAL           APP_TIMER_TICKS(40, APP_TIMER_PRESCALER)
+#define SAMPLING_INTERVAL               APP_TIMER_TICKS(1, APP_TIMER_PRESCALER)
+
+static volatile bool is_data_rdy = false;
+static volatile uint32_t status_count = 0;
+static volatile uint32_t sample_count = 0;
+static volatile uint16_t success = 0;
+static volatile uint32_t no_packets = 0;
+static volatile uint16_t other = 0;
 
 
 /**@brief Function for assert macro callback.
@@ -195,6 +213,38 @@ static void led_write_handler(ble_lbs_t * p_lbs, uint8_t led_state)
     }
 }
 
+static void timer_write_handler(ble_ims_t * p_lbs, uint8_t timer_state)
+{
+	uint32_t err_code;
+	if (timer_state >> 4)
+	{
+		err_code = app_timer_start(m_sampling_timer_id, SAMPLING_INTERVAL, NULL);
+		if (err_code != NRF_SUCCESS)
+		{
+			NRF_LOG_INFO("Sampling timer failed: %d", err_code);
+		}
+	}
+	else
+	{
+		err_code = app_timer_stop(m_sampling_timer_id);
+	}
+	APP_ERROR_CHECK(err_code);
+
+	if (timer_state & 0xF)
+	{
+	    err_code = app_timer_start(m_notification_timer_id, NOTIFICATION_INTERVAL, NULL);
+		if (err_code != NRF_SUCCESS)
+		{
+			NRF_LOG_INFO("Notification timer failed: %d", err_code);
+		}
+	}
+    else
+    {
+		err_code = app_timer_stop(m_notification_timer_id);
+    }
+	APP_ERROR_CHECK(err_code);
+}
+
 
 /**@brief Function for initializing services that will be used by the application.
  */
@@ -206,6 +256,12 @@ static void services_init(void)
     init.led_write_handler = led_write_handler;
 
     err_code = ble_lbs_init(&m_lbs, &init);
+    APP_ERROR_CHECK(err_code);
+
+    ble_ims_init_t ims_init;
+    ims_init.timer_write_handler = timer_write_handler;
+
+    err_code = ble_ims_init(&m_ims, &ims_init);
     APP_ERROR_CHECK(err_code);
 }
 
@@ -285,6 +341,7 @@ static void advertising_start(void)
     err_code = sd_ble_gap_adv_start(&adv_params);
     APP_ERROR_CHECK(err_code);
     bsp_board_led_on(ADVERTISING_LED_PIN);
+    NRF_LOG_INFO("Advertising started...\r\n");
 }
 
 
@@ -411,6 +468,7 @@ static void ble_evt_dispatch(ble_evt_t * p_ble_evt)
     on_ble_evt(p_ble_evt);
     ble_conn_params_on_ble_evt(p_ble_evt);
     ble_lbs_on_ble_evt(&m_lbs, p_ble_evt);
+    ble_ims_on_ble_evt(&m_ims, p_ble_evt);
 }
 
 
@@ -505,6 +563,88 @@ static void power_manage(void)
     APP_ERROR_CHECK(err_code);
 }
 
+static void update_sensor_data(uint8_t * p_sample, uint16_t sample_length)
+{
+	uint32_t err_code;
+    err_code = ble_ims_on_sample_change(&m_ims, p_sample, sample_length);
+//		printf("%d", err_code);
+	APP_ERROR_CHECK(err_code);
+	is_data_rdy = false;
+    sample_count++;
+}
+
+static void update_sensor_status(uint8_t * p_read, uint16_t length)
+{
+	if (p_read[0] == 0x3 || p_read[0] == 0x7)
+    {
+		NRF_LOG_INFO("RDY1\r\n");
+    	is_data_rdy = true;
+    }
+    else
+    {
+    	NRF_LOG_INFO("RDY0\r\n");
+    	is_data_rdy = false;
+    }
+    status_count++;
+}
+
+static void sampling_timeout_handler(void * p_context)
+{
+    UNUSED_PARAMETER(p_context);
+
+	if (!is_data_rdy)
+    {
+        poll_is_data_rdy();
+    }
+    else
+    {
+    	bulk_read_into_gatts();
+    }
+}
+
+static void notification_timeout_handler(void * p_context)
+{
+    UNUSED_PARAMETER(p_context);
+
+    m_counter_value++;
+
+	uint32_t err_code;
+
+    err_code = ble_ims_on_counter_change(&m_ims, m_counter_value);
+//	  printf("%d", err_code);
+//    APP_ERROR_CHECK(err_code);
+	if (err_code == 0)
+    {
+    	success++;
+    }
+    else if (err_code == BLE_ERROR_NO_TX_PACKETS)
+    {
+    	no_packets++;
+    }
+    else
+    {
+    	other++;
+    }
+}
+
+static void on_sensor_read_handler(volatile spi_read_evt_t * spi_read_event, uint8_t * p_read, uint16_t length)
+{
+	switch (spi_read_event->evt_type)
+	{
+	    case SPI_EVT_READ_STATUS:
+	        update_sensor_status(p_read, length);
+	        break;
+
+	    case SPI_EVT_READ_SAMPLE:
+	        update_sensor_data(p_read, length);
+	        break;
+
+	    default:
+	        // No implementation needed.
+	        break;
+	}
+}
+
 
 /**@brief Function for application main entry.
  */
@@ -515,8 +655,16 @@ int main(void)
     // Initialize.
     leds_init();
     timers_init();
+
+    err_code = app_timer_create(&m_sampling_timer_id, APP_TIMER_MODE_REPEATED, sampling_timeout_handler);
+    APP_ERROR_CHECK(err_code);
+    err_code = app_timer_create(&m_notification_timer_id, APP_TIMER_MODE_REPEATED, notification_timeout_handler);
+    APP_ERROR_CHECK(err_code);
+
     err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
+    NRF_LOG_INFO("Initializing...\r\n");
+
     buttons_init();
     ble_stack_init();
     gap_params_init();
@@ -528,9 +676,25 @@ int main(void)
     NRF_LOG_INFO("Blinky Start!\r\n");
     advertising_start();
 
+    configure(on_sensor_read_handler);
+
     // Enter main loop.
     for (;;)
     {
+    	NRF_LOG_INFO("Status count: %d Sample count: %d\r\n", status_count, sample_count);
+        status_count = 0;
+        sample_count = 0;
+
+        NRF_LOG_INFO("Sent notifs: %d, Lost packets: %d, Other: %d\r\n", success, no_packets, other);
+        success = 0;
+        no_packets = 0;
+        other = 0;
+
+        NRF_LOG_FLUSH();
+
+        bsp_board_led_invert(LEDBUTTON_LED_PIN);
+        nrf_delay_ms(1000);
+
         if (NRF_LOG_PROCESS() == false)
         {
             power_manage();
