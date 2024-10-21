@@ -25,8 +25,8 @@ static volatile spi_read_evt_t spi_read_evt;
  */
 void spi_event_handler(nrf_drv_spi_evt_t const *p_event) {
 	spi_xfer_done = true;
-	  NRF_LOG_INFO(" Sent. Address: %X\r\n", p_event->data.done.p_tx_buffer[0]);
-	  NRF_LOG_INFO(" Sent. Data: %X\r\n", p_event->data.done.p_tx_buffer[1]);
+//	  NRF_LOG_INFO(" Sent. Address: %X\r\n", p_event->data.done.p_tx_buffer[0]);
+//	  NRF_LOG_INFO(" Sent. Data: %X\r\n", p_event->data.done.p_tx_buffer[1]);
 	if (!m_set_mode_done) {
 		m_set_mode_done = true;
 	}
@@ -36,8 +36,8 @@ void spi_event_handler(nrf_drv_spi_evt_t const *p_event) {
 //			  NRF_LOG_PRINTF(" Size: %d\r\n", p_event->data.done.rx_length);
 //			  NRF_LOG_PRINTF(" OUT_TEMP_L: %X\r\n",m_rx_buf[1]);
 //			  NRF_LOG_PRINTF(" OUT_TEMP_H: %X\r\n",m_rx_buf[2]);
-		NRF_LOG_INFO(" Received: %X %X\r\n", m_rx_buf[0], m_rx_buf[1]);
-		NRF_LOG_HEXDUMP_INFO(m_rx_buf, 2);
+//		NRF_LOG_INFO(" Received: %X %X\r\n", m_rx_buf[0], m_rx_buf[1]);
+//		NRF_LOG_HEXDUMP_INFO(m_rx_buf, 2);
 
 		if (m_on_sensor_read_handler) {
 			m_on_sensor_read_handler(&spi_read_evt,

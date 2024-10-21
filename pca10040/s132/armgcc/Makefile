@@ -38,9 +38,15 @@ SRC_FILES += \
   $(SDK_ROOT)/components/toolchain/gcc/gcc_startup_nrf52.S \
   $(SDK_ROOT)/components/toolchain/system_nrf52.c \
   $(SDK_ROOT)/components/ble/ble_services/ble_lbs/ble_lbs.c \
+  $(SDK_ROOT)/components/ble/ble_services/ble_nus/ble_nus.c \
   $(SDK_ROOT)/components/softdevice/common/softdevice_handler/softdevice_handler.c \
   $(PROJ_DIR)/spi/spi.c \
   $(PROJ_DIR)/services/ble_ims.c \
+  $(SDK_ROOT)/components/libraries/queue/nrf_queue.c \
+  $(PROJ_DIR)/filters.c \
+  $(SDK_ROOT)/components/libraries/pwm/app_pwm.c \
+  $(SDK_ROOT)/components/drivers_nrf/timer/nrf_drv_timer.c \
+  $(SDK_ROOT)/components/drivers_nrf/ppi/nrf_drv_ppi.c \
 
 # Include folders common to all targets
 INC_FOLDERS += \
@@ -156,6 +162,7 @@ CFLAGS += -DNRF52
 CFLAGS += -DNRF52_PAN_64
 CFLAGS += -DSOFTDEVICE_PRESENT
 CFLAGS += -DBOARD_CUSTOM
+CFLAGS += -DDEBUG
 CFLAGS += -DNRF52832
 CFLAGS += -DNRF52_PAN_12
 CFLAGS += -DNRF52_PAN_58
@@ -212,6 +219,7 @@ LDFLAGS += -mfloat-abi=hard -mfpu=fpv4-sp-d16
 LDFLAGS += -Wl,--gc-sections
 # use newlib in nano version
 LDFLAGS += --specs=nano.specs -lc -lnosys
+LDFLAGS += -u _printf_float
 
 
 .PHONY: $(TARGETS) default all clean help flash flash_softdevice

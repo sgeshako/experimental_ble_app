@@ -16,10 +16,12 @@
  * This file contains the source code for a sample server application using the LED Button service.
  */
 
+#include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <math.h>
 #include "nordic_common.h"
-#include "nrf.h"
+//#include "nrf.h"
 #include "app_error.h"
 #include "ble.h"
 #include "ble_hci.h"
@@ -35,6 +37,10 @@
 #include "nrf_delay.h"
 #include "spi.h"
 #include "ble_ims.h"
+#include "nrf_queue.h"
+#include "ble_nus.h"
+#include "filters.h"
+#include "app_pwm.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -80,13 +86,20 @@
 static uint16_t                         m_conn_handle = BLE_CONN_HANDLE_INVALID;    /**< Handle of the current connection. */
 static ble_lbs_t                        m_lbs;                                      /**< LED Button Service instance. */
 static ble_ims_t                        m_ims;
+static ble_nus_t                        m_nus;                                      /**< Structure to identify the Nordic UART Service. */
 
 APP_TIMER_DEF(m_notification_timer_id);
 APP_TIMER_DEF(m_sampling_timer_id);
 static volatile uint16_t m_counter_value = 0;
 
+APP_PWM_INSTANCE(PWM1,1);                   // Create the instance "PWM1" using TIMER1.
+
+#define SAMPLING_MS 5
+
 #define NOTIFICATION_INTERVAL           APP_TIMER_TICKS(40, APP_TIMER_PRESCALER)
-#define SAMPLING_INTERVAL               APP_TIMER_TICKS(1, APP_TIMER_PRESCALER)
+#define SAMPLING_INTERVAL               APP_TIMER_TICKS(SAMPLING_MS, APP_TIMER_PRESCALER)
+
+#define M_PI		3.14159265358979323846
 
 static volatile bool is_data_rdy = false;
 static volatile uint32_t status_count = 0;
@@ -95,6 +108,20 @@ static volatile uint16_t success = 0;
 static volatile uint32_t no_packets = 0;
 static volatile uint16_t other = 0;
 
+NRF_QUEUE_DEF(sample_combo_t, m_sample_queue, 20, NRF_QUEUE_MODE_NO_OVERFLOW);
+//NRF_QUEUE_DEF(int16_t, m_test_queue, 20, NRF_QUEUE_MODE_NO_OVERFLOW);
+
+static volatile double gyro_x_angle = 0;
+static double gyro_y_raw_angle = 0;
+//static double gyro_y_angle = 0;
+static double gyro_y_angle2 = 0;
+static double gyro_y_angle_mahony = 0;
+static double gyro_y_angle_kalman = 0;
+static double acc_x_angle = 0;
+static double acc_y_angle = 0;
+//static double gyro_error = 0;
+//static int16_t num = 0;
+//static int16_t data[20];
 
 /**@brief Function for assert macro callback.
  *
@@ -227,6 +254,9 @@ static void timer_write_handler(ble_ims_t * p_lbs, uint8_t timer_state)
 	else
 	{
 		err_code = app_timer_stop(m_sampling_timer_id);
+		gyro_y_raw_angle = 0;
+		acc_x_angle = 0;
+		gyro_y_angle2 = 0;
 	}
 	APP_ERROR_CHECK(err_code);
 
@@ -263,6 +293,13 @@ static void services_init(void)
 
     err_code = ble_ims_init(&m_ims, &ims_init);
     APP_ERROR_CHECK(err_code);
+
+
+	ble_nus_init_t nus_init;
+	nus_init.data_handler = NULL; // No handling of incoming data
+
+	err_code = ble_nus_init(&m_nus, &nus_init);
+	APP_ERROR_CHECK(err_code);
 }
 
 
@@ -341,7 +378,7 @@ static void advertising_start(void)
     err_code = sd_ble_gap_adv_start(&adv_params);
     APP_ERROR_CHECK(err_code);
     bsp_board_led_on(ADVERTISING_LED_PIN);
-    NRF_LOG_INFO("Advertising started...\r\n");
+//    NRF_LOG_INFO("Advertising started...\r\n");
 }
 
 
@@ -356,8 +393,8 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
     switch (p_ble_evt->header.evt_id)
     {
         case BLE_GAP_EVT_CONNECTED:
-            NRF_LOG_INFO("Connected\r\n");
-            bsp_board_led_on(CONNECTED_LED_PIN);
+//            NRF_LOG_INFO("Connected\r\n");
+//            bsp_board_led_on(CONNECTED_LED_PIN); // Commented when using PWM
             bsp_board_led_off(ADVERTISING_LED_PIN);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
 
@@ -366,8 +403,8 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
             break; // BLE_GAP_EVT_CONNECTED
 
         case BLE_GAP_EVT_DISCONNECTED:
-            NRF_LOG_INFO("Disconnected\r\n");
-            bsp_board_led_off(CONNECTED_LED_PIN);
+//            NRF_LOG_INFO("Disconnected\r\n");
+//            bsp_board_led_off(CONNECTED_LED_PIN); // Commented when using PWM
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
             err_code = app_button_disable();
@@ -469,6 +506,7 @@ static void ble_evt_dispatch(ble_evt_t * p_ble_evt)
     ble_conn_params_on_ble_evt(p_ble_evt);
     ble_lbs_on_ble_evt(&m_lbs, p_ble_evt);
     ble_ims_on_ble_evt(&m_ims, p_ble_evt);
+    ble_nus_on_ble_evt(&m_nus, p_ble_evt);
 }
 
 
@@ -490,6 +528,7 @@ static void ble_stack_init(void)
                                                     PERIPHERAL_LINK_COUNT,
                                                     &ble_enable_params);
     APP_ERROR_CHECK(err_code);
+    ble_enable_params.common_enable_params.vs_uuid_count = 2;
 
     //Check the ram settings against the used number of links
     CHECK_RAM_START_ADDR(CENTRAL_LINK_COUNT, PERIPHERAL_LINK_COUNT);
@@ -527,6 +566,7 @@ static void button_event_handler(uint8_t pin_no, uint8_t button_action)
             {
                 APP_ERROR_CHECK(err_code);
             }
+            gyro_x_angle = 0;
             break;
 
         default:
@@ -563,15 +603,15 @@ static void power_manage(void)
     APP_ERROR_CHECK(err_code);
 }
 
-static void update_sensor_data(uint8_t * p_sample, uint16_t sample_length)
-{
-	uint32_t err_code;
-    err_code = ble_ims_on_sample_change(&m_ims, p_sample, sample_length);
-//		printf("%d", err_code);
-	APP_ERROR_CHECK(err_code);
-	is_data_rdy = false;
-    sample_count++;
-}
+//static void update_sensor_data(uint8_t * p_sample, uint16_t sample_length)
+//{
+//	uint32_t err_code;
+//    err_code = ble_ims_on_sample_change(&m_ims, p_sample, sample_length);
+////		printf("%d", err_code);
+//	APP_ERROR_CHECK(err_code);
+//	is_data_rdy = false;
+//    sample_count++;
+//}
 
 static void update_sensor_status(uint8_t * p_read, uint16_t length)
 {
@@ -592,14 +632,20 @@ static void sampling_timeout_handler(void * p_context)
 {
     UNUSED_PARAMETER(p_context);
 
-	if (!is_data_rdy)
-    {
-        poll_is_data_rdy();
-    }
-    else
-    {
+//	if (!is_data_rdy)
+//    {
+//        poll_is_data_rdy();
+//    }
+//    else
+//    {
     	bulk_read_into_gatts();
-    }
+//    }
+
+//    	num = num + 1;
+//		ret_code_t err_code = nrf_queue_push(&m_test_queue, &num);
+//		if (err_code != NRF_ERROR_NO_MEM) {
+//			APP_ERROR_CHECK(err_code);
+//		}
 }
 
 static void notification_timeout_handler(void * p_context)
@@ -636,8 +682,31 @@ static void on_sensor_read_handler(volatile spi_read_evt_t * spi_read_event, uin
 	        break;
 
 	    case SPI_EVT_READ_SAMPLE:
-	        update_sensor_data(p_read, length);
+	    {
+	    	sample_combo_t new_sample;
+	    	memcpy(&new_sample, p_read, length);
+
+//	    	if (m_sample_queue.p_cb->back == 0 || new_sample.acc.z.conv == 0)
+//	    	{
+//				NRF_LOG_RAW_INFO("Gyroscope: ");
+//				NRF_LOG_RAW_INFO("[X: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.gyro.x.conv * 0.00875f));
+//				NRF_LOG_RAW_INFO("Y: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.gyro.y.conv * 0.00875f));
+//				NRF_LOG_RAW_INFO("Z: "NRF_LOG_FLOAT_MARKER"]\r\n", NRF_LOG_FLOAT(new_sample.gyro.z.conv * 0.00875f));
+//				NRF_LOG_RAW_INFO("Accelerator: ");
+//				NRF_LOG_RAW_INFO("[x: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.acc.x.conv * 0.061f));
+//				NRF_LOG_RAW_INFO("y: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.acc.y.conv * 0.061f));
+//				NRF_LOG_RAW_INFO("z: "NRF_LOG_FLOAT_MARKER"]\r\n", NRF_LOG_FLOAT(new_sample.acc.z.conv * 0.061f));
+//				NRF_LOG_RAW_INFO("Temperature: "NRF_LOG_FLOAT_MARKER" C\r\n", NRF_LOG_FLOAT(25 + new_sample.temp.conv * 0.0625f));
+//	    	}
+
+	    	ret_code_t err_code = nrf_queue_push(&m_sample_queue, &new_sample);
+	    	if (err_code != NRF_ERROR_NO_MEM) {
+				APP_ERROR_CHECK(err_code);
+			}
+
+//	        update_sensor_data(p_read, length);
 	        break;
+	    }
 
 	    default:
 	        // No implementation needed.
@@ -645,6 +714,32 @@ static void on_sensor_read_handler(volatile spi_read_evt_t * spi_read_event, uin
 	}
 }
 
+//static double integrate(int16_t sample1, int16_t sample2)
+//{
+////	if ((acc1 > 3280 || acc1 < 0) && (acc2 > 3280 || acc2 < 0))
+////	{
+//		return ((sample1 + sample2) / 2.0) * SAMPLING_MS;
+////	}
+////	return 0;
+//}
+
+void pwm_ready_callback(uint32_t pwm_id)    // PWM callback function
+{
+
+}
+
+static void pwm_init(void)
+{
+	uint32_t err_code;
+
+	/* 2-channel PWM, 200Hz, output on LED pin. */
+	app_pwm_config_t pwm1_cfg = APP_PWM_DEFAULT_CONFIG_1CH(5000L, 29);
+
+	/* Initialize and enable PWM. */
+	err_code = app_pwm_init(&PWM1, &pwm1_cfg, pwm_ready_callback);
+	APP_ERROR_CHECK(err_code);
+	app_pwm_enable(&PWM1);
+}
 
 /**@brief Function for application main entry.
  */
@@ -661,9 +756,11 @@ int main(void)
     err_code = app_timer_create(&m_notification_timer_id, APP_TIMER_MODE_REPEATED, notification_timeout_handler);
     APP_ERROR_CHECK(err_code);
 
+    pwm_init();
+
     err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
-    NRF_LOG_INFO("Initializing...\r\n");
+//    NRF_LOG_INFO("Initializing...\r\n");
 
     buttons_init();
     ble_stack_init();
@@ -681,19 +778,88 @@ int main(void)
     // Enter main loop.
     for (;;)
     {
-    	NRF_LOG_INFO("Status count: %d Sample count: %d\r\n", status_count, sample_count);
-        status_count = 0;
-        sample_count = 0;
+    	if (nrf_queue_is_full(&m_sample_queue))
+    	{
+			int i = 0;
+			sample_combo_t data[2];
+			memset(data, 0, sizeof(data));
 
-        NRF_LOG_INFO("Sent notifs: %d, Lost packets: %d, Other: %d\r\n", success, no_packets, other);
-        success = 0;
-        no_packets = 0;
-        other = 0;
+			while (nrf_queue_pop(&m_sample_queue, &data[i++ % 2]) == NRF_SUCCESS)
+			{
+//				int16_t gyro_y_raw1 = data[0].gyro.y.conv;
+//				int16_t gyro_y_raw2 = data[1].gyro.y.conv;
 
-        NRF_LOG_FLUSH();
+//				gyro_error = 0.01 * (gyro_y_angle - acc_x_angle);
+//				gyro_y_angle += integrate(gyro_y_raw1, gyro_y_raw2) * 0.00875f * 0.001f;
+//				gyro_y_angle -= gyro_error;
+//
+//				int16_t gyro_x_raw1 = data[0].gyro.x.conv;
+//				int16_t gyro_x_raw2 = data[1].gyro.x.conv;
+//				gyro_x_angle += integrate(gyro_x_raw1, gyro_x_raw2) * 0.00875f * 0.001f;
 
-        bsp_board_led_invert(LEDBUTTON_LED_PIN);
-        nrf_delay_ms(1000);
+				int16_t acc_x = data[(i-1)%2].acc.x.conv;
+				int16_t acc_y = data[(i-1)%2].acc.y.conv;
+				int16_t acc_z = data[(i-1)%2].acc.z.conv;
+
+				int16_t gyro_y_rate = data[(i-1)%2].gyro.y.conv;
+
+				gyro_y_raw_angle += gyro_y_rate * 0.00875f * SAMPLING_MS * 0.001f;
+
+				if (!(acc_x == 0 && acc_y == 0 && acc_z == 0 && gyro_y_rate == 0))
+				{
+					if (acc_z != 0)
+					{
+						acc_x_angle = -atan((double)acc_x / acc_z) * 180.0 / M_PI;
+						acc_y_angle = -atan((double)acc_y / acc_z) * 180.0 / M_PI;
+					}
+
+//					gyro_y_angle = comp_filter(gyro_y_rate, acc_x_angle, SAMPLING_MS * 0.001f);
+					gyro_y_angle2 = comp_filter_2(gyro_y_rate, acc_x_angle, SAMPLING_MS * 0.001f);
+					gyro_y_angle_mahony = mahony_filter(gyro_y_rate, acc_x_angle, SAMPLING_MS * 0.001f);
+					gyro_y_angle_kalman = kalman_filter(gyro_y_rate, acc_x_angle, SAMPLING_MS * 0.001f);
+				}
+
+
+//				NRF_LOG_RAW_INFO("Complementary1:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle));
+//				NRF_LOG_RAW_INFO("\t");
+				NRF_LOG_RAW_INFO("Complementary:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle2));
+				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO("Accelerometer:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(acc_x_angle));
+//				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO("Gyroscope:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_raw_angle));
+//				NRF_LOG_RAW_INFO("\t");
+				NRF_LOG_RAW_INFO("Mahony:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_mahony));
+				NRF_LOG_RAW_INFO("\t");
+				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
+//				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO(NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(-gyro_x_angle * 0.00875f * 0.001f));
+//				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO(NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(acc_y_angle));
+				NRF_LOG_RAW_INFO("\r\n")
+			}
+			NRF_LOG_FLUSH();
+
+//	    	char buffer[20];
+//			int length = sprintf(buffer, "%.2f %.2f",
+//					data[0].acc.x.conv * 0.061f,
+////					new_sample.acc.y.conv * 0.061f);
+//					data[0].acc.z.conv * 0.061f);
+//			err_code = ble_nus_string_send(&m_nus, (uint8_t *) buffer, length);
+//			if (err_code != NRF_ERROR_INVALID_STATE)
+//			{
+//				APP_ERROR_CHECK(err_code);
+//			}
+		}
+
+//		NRF_LOG_RAW_INFO(NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(velocity * 0.061f * 9.80665f * 0.0001f));
+//        NRF_LOG_FLUSH();
+
+//        bsp_board_led_invert(LEDBUTTON_LED_PIN);
+//        nrf_delay_ms(1000);
+
+    	uint16_t duty_cycle = fabs(gyro_y_angle_mahony / 90.0) * 100;
+		/* Set the duty cycle - keep trying until PWM is ready... */
+		while (app_pwm_channel_duty_set(&PWM1, 0, duty_cycle) == NRF_ERROR_BUSY);
 
         if (NRF_LOG_PROCESS() == false)
         {
