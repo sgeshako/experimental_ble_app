@@ -3,17 +3,6 @@
 double comp_filter(int16_t gyro_y_rate, double acc_x_angle, double dt)
 {
 	static double gyro_y_angle = 0;
-
-	double gyro_error = 0.01 * (gyro_y_angle - acc_x_angle);
-	gyro_y_angle += gyro_y_rate * 0.00875f * dt;
-	gyro_y_angle -= gyro_error;
-	return gyro_y_angle;
-//	return -100 * gyro_error;
-}
-
-double comp_filter_2(int16_t gyro_y_rate, double acc_x_angle, double dt)
-{
-	static double gyro_y_angle = 0;
 	static double Kp = 0.01;
 
 	gyro_y_angle += gyro_y_rate * 0.00875f * dt;

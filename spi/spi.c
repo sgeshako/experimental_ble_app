@@ -5,6 +5,7 @@
 #include "nrf_log_ctrl.h"
 #include <string.h>
 #include "spi.h"
+#include "nrf_queue.h"
 
 #define SPI_INSTANCE  0 /**< SPI instance index. */
 static const nrf_drv_spi_t spi = NRF_DRV_SPI_INSTANCE(SPI_INSTANCE); /**< SPI instance. */
@@ -16,8 +17,7 @@ static uint8_t m_tx_buf[2]; /**< TX buffer. */
 static uint8_t m_rx_buf[15]; /**< RX buffer. */
 static const uint8_t m_length = sizeof(m_tx_buf); /**< Transfer length. */
 
-static on_sensor_read_handler_t m_on_sensor_read_handler;
-static volatile spi_read_evt_t spi_read_evt;
+static nrf_queue_t const * mp_queue = NULL;
 
 /**
  * @brief SPI user event handler.
@@ -30,8 +30,7 @@ void spi_event_handler(nrf_drv_spi_evt_t const *p_event) {
 	if (!m_set_mode_done) {
 		m_set_mode_done = true;
 	}
-//    if (m_rx_buf[0] != 0)
-	if (p_event->data.done.p_rx_buffer[0] != 0) {
+    if (m_rx_buf[0] != 0) {
 //        NRF_LOG_PRINTF(" Received: \r\n");
 //			  NRF_LOG_PRINTF(" Size: %d\r\n", p_event->data.done.rx_length);
 //			  NRF_LOG_PRINTF(" OUT_TEMP_L: %X\r\n",m_rx_buf[1]);
@@ -39,10 +38,23 @@ void spi_event_handler(nrf_drv_spi_evt_t const *p_event) {
 //		NRF_LOG_INFO(" Received: %X %X\r\n", m_rx_buf[0], m_rx_buf[1]);
 //		NRF_LOG_HEXDUMP_INFO(m_rx_buf, 2);
 
-		if (m_on_sensor_read_handler) {
-			m_on_sensor_read_handler(&spi_read_evt,
-					&p_event->data.done.p_rx_buffer[1],
-					p_event->data.done.rx_length - 1);
+    	//			sample_combo_t new_sample;
+    	//			memcpy(new_sample, &m_rx_buf[1], sizeof(new_sample));
+    	//	    	if (m_sample_queue.p_cb->back == 0 || new_sample.acc.z.conv == 0)
+    	//	    	{
+    	//				NRF_LOG_RAW_INFO("Gyroscope: ");
+    	//				NRF_LOG_RAW_INFO("[X: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.gyro.x.conv * 0.00875f));
+    	//				NRF_LOG_RAW_INFO("Y: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.gyro.y.conv * 0.00875f));
+    	//				NRF_LOG_RAW_INFO("Z: "NRF_LOG_FLOAT_MARKER"]\r\n", NRF_LOG_FLOAT(new_sample.gyro.z.conv * 0.00875f));
+    	//				NRF_LOG_RAW_INFO("Accelerator: ");
+    	//				NRF_LOG_RAW_INFO("[x: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.acc.x.conv * 0.061f));
+    	//				NRF_LOG_RAW_INFO("y: "NRF_LOG_FLOAT_MARKER", ", NRF_LOG_FLOAT(new_sample.acc.y.conv * 0.061f));
+    	//				NRF_LOG_RAW_INFO("z: "NRF_LOG_FLOAT_MARKER"]\r\n", NRF_LOG_FLOAT(new_sample.acc.z.conv * 0.061f));
+    	//				NRF_LOG_RAW_INFO("Temperature: "NRF_LOG_FLOAT_MARKER" C\r\n", NRF_LOG_FLOAT(25 + new_sample.temp.conv * 0.0625f));
+    	//	    	}
+
+		if (mp_queue != NULL) {
+			nrf_queue_push(mp_queue, &m_rx_buf[1]);
 		}
 	}
 }
@@ -79,7 +91,7 @@ void spi_init(void) {
 	is_spi_init = true;
 }
 
-void bulk_read(sample_combo_t *p_new_sample, uint8_t sample_size) {
+void read_sensor_blocking(sample_combo_t *p_new_sample, uint8_t sample_size) {
 	if (!is_spi_init) {
 		spi_init();
 	}
@@ -88,7 +100,7 @@ void bulk_read(sample_combo_t *p_new_sample, uint8_t sample_size) {
 		LSM6DS33_configure();
 	}
 
-	m_on_sensor_read_handler = NULL;
+	mp_queue = NULL;
 	// Reset rx buffer and transfer done flag
 	memset(m_rx_buf, 0, sizeof(m_rx_buf));
 	spi_xfer_done = false;
@@ -105,8 +117,8 @@ void bulk_read(sample_combo_t *p_new_sample, uint8_t sample_size) {
 	memcpy(p_new_sample, &m_rx_buf[1], sample_size);
 }
 
-void bulk_read_into_gatts(void) {
-	spi_read_evt.evt_type = SPI_EVT_READ_SAMPLE;
+void read_sensor_non_blocking(void) {
+
 	// Reset rx buffer and transfer done flag
 	memset(m_rx_buf, 0, sizeof(m_rx_buf));
 	spi_xfer_done = false;
@@ -117,7 +129,7 @@ void bulk_read_into_gatts(void) {
 }
 
 void poll_is_data_rdy(void) {
-	spi_read_evt.evt_type = SPI_EVT_READ_STATUS;
+
 	// Reset rx buffer and transfer done flag
 	memset(m_rx_buf, 0, sizeof(m_rx_buf));
 	spi_xfer_done = false;
@@ -127,7 +139,7 @@ void poll_is_data_rdy(void) {
 	APP_ERROR_CHECK(nrf_drv_spi_transfer(&spi, m_tx_buf, m_length, m_rx_buf, 2));
 }
 
-void configure(on_sensor_read_handler_t on_sensor_read_handler) {
+void configure(nrf_queue_t const * p_queue) {
 	if (!is_spi_init) {
 		spi_init();
 	}
@@ -136,5 +148,5 @@ void configure(on_sensor_read_handler_t on_sensor_read_handler) {
 		LSM6DS33_configure();
 	}
 
-	m_on_sensor_read_handler = on_sensor_read_handler;
+	mp_queue = p_queue;
 }
