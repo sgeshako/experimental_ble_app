@@ -41,6 +41,11 @@
 #include "ble_nus.h"
 #include "filters.h"
 #include "app_pwm.h"
+#include "hid.h"
+#include "hid_peer_manager.h"
+#include "ble_advertising.h"
+#include "fstorage.h"
+#include "ble_conn_state.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -70,10 +75,11 @@
 #define APP_TIMER_MAX_TIMERS            6                                           /**< Maximum number of simultaneously created timers. */
 #define APP_TIMER_OP_QUEUE_SIZE         4                                           /**< Size of timer operation queues. */
 
-#define MIN_CONN_INTERVAL               MSEC_TO_UNITS(100, UNIT_1_25_MS)            /**< Minimum acceptable connection interval (0.5 seconds). */
-#define MAX_CONN_INTERVAL               MSEC_TO_UNITS(200, UNIT_1_25_MS)            /**< Maximum acceptable connection interval (1 second). */
-#define SLAVE_LATENCY                   0                                           /**< Slave latency. */
-#define CONN_SUP_TIMEOUT                MSEC_TO_UNITS(4000, UNIT_10_MS)             /**< Connection supervisory time-out (4 seconds). */
+#define MIN_CONN_INTERVAL                MSEC_TO_UNITS(7.5, UNIT_1_25_MS)            /**< Minimum connection interval (7.5 ms) */
+#define MAX_CONN_INTERVAL                MSEC_TO_UNITS(30, UNIT_1_25_MS)             /**< Maximum connection interval (30 ms). */
+#define SLAVE_LATENCY                    6                                           /**< Slave latency. */
+#define CONN_SUP_TIMEOUT                 MSEC_TO_UNITS(430, UNIT_10_MS)              /**< Connection supervisory timeout (430 ms). */
+
 #define FIRST_CONN_PARAMS_UPDATE_DELAY  APP_TIMER_TICKS(20000, APP_TIMER_PRESCALER) /**< Time from initiating event (connect or start of notification) to first time sd_ble_gap_conn_param_update is called (15 seconds). */
 #define NEXT_CONN_PARAMS_UPDATE_DELAY   APP_TIMER_TICKS(5000, APP_TIMER_PRESCALER)  /**< Time between each call to sd_ble_gap_conn_param_update after the first call (5 seconds). */
 #define MAX_CONN_PARAMS_UPDATE_COUNT    3                                           /**< Number of attempts before giving up the connection parameter negotiation. */
@@ -87,6 +93,9 @@ static uint16_t                         m_conn_handle = BLE_CONN_HANDLE_INVALID;
 static ble_lbs_t                        m_lbs;                                      /**< LED Button Service instance. */
 static ble_ims_t                        m_ims;
 static ble_nus_t                        m_nus;                                      /**< Structure to identify the Nordic UART Service. */
+static ble_hids_t 						m_hids;                                   /**< Structure used to identify the HID service. */
+static ble_bas_t  						m_bas;                                    /**< Structure used to identify the battery service. */
+
 
 APP_TIMER_DEF(m_notification_timer_id);
 APP_TIMER_DEF(m_sampling_timer_id);
@@ -104,12 +113,17 @@ APP_PWM_INSTANCE(PWM1,1);                   // Create the instance "PWM1" using 
 NRF_QUEUE_DEF(sample_combo_t, m_sample_queue, 20, NRF_QUEUE_MODE_NO_OVERFLOW);
 
 static const double dt = SAMPLING_MS * 0.001f;
-static volatile double gyro_y_raw_angle = 0;
-static volatile double gyro_y_angle = 0;
-static double gyro_y_angle_mahony = 0;
-static double gyro_y_angle_kalman = 0;
+static volatile double gyro_x_raw_angle = 0;
+static volatile double gyro_x_angle = 0;
+static double gyro_x_angle_mahony = 0;
+static double gyro_x_angle_kalman = 0;
 static volatile double acc_x_angle = 0;
 static double acc_y_angle = 0;
+
+#define LEFT_KEY 0x50 // Keyboard Left Arrow
+#define RIGHT_KEY 0x4f // Keyboard Right Arrow
+#define KEY_RELEASE 0x00 // Empty code signifies key release
+static bool m_key_last_state_pressed = true;
 
 /**@brief Function for assert macro callback.
  *
@@ -146,6 +160,8 @@ static void timers_init(void)
 {
     // Initialize timer module, making it use the scheduler
     APP_TIMER_INIT(APP_TIMER_PRESCALER, APP_TIMER_OP_QUEUE_SIZE, false);
+
+    // app_timer_create can come here
 }
 
 
@@ -167,6 +183,9 @@ static void gap_params_init(void)
                                           strlen(DEVICE_NAME));
     APP_ERROR_CHECK(err_code);
 
+    err_code = sd_ble_gap_appearance_set(BLE_APPEARANCE_HID_KEYBOARD);
+    APP_ERROR_CHECK(err_code);
+
     memset(&gap_conn_params, 0, sizeof(gap_conn_params));
 
     gap_conn_params.min_conn_interval = MIN_CONN_INTERVAL;
@@ -184,29 +203,29 @@ static void gap_params_init(void)
  * @details Encodes the required advertising data and passes it to the stack.
  *          Also builds a structure to be passed to the stack when starting advertising.
  */
-static void advertising_init(void)
-{
-    uint32_t      err_code;
-    ble_advdata_t advdata;
-    ble_advdata_t scanrsp;
-
-    ble_uuid_t adv_uuids[] = {{LBS_UUID_SERVICE, m_lbs.uuid_type}};
-
-    // Build and set advertising data
-    memset(&advdata, 0, sizeof(advdata));
-
-    advdata.name_type          = BLE_ADVDATA_FULL_NAME;
-    advdata.include_appearance = true;
-    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
-
-
-    memset(&scanrsp, 0, sizeof(scanrsp));
-    scanrsp.uuids_complete.uuid_cnt = sizeof(adv_uuids) / sizeof(adv_uuids[0]);
-    scanrsp.uuids_complete.p_uuids  = adv_uuids;
-
-    err_code = ble_advdata_set(&advdata, &scanrsp);
-    APP_ERROR_CHECK(err_code);
-}
+//static void advertising_init(void)
+//{
+//    uint32_t      err_code;
+//    ble_advdata_t advdata;
+//    ble_advdata_t scanrsp;
+//
+//    ble_uuid_t adv_uuids[] = {{LBS_UUID_SERVICE, m_lbs.uuid_type}};
+//
+//    // Build and set advertising data
+//    memset(&advdata, 0, sizeof(advdata));
+//
+//    advdata.name_type          = BLE_ADVDATA_FULL_NAME;
+//    advdata.include_appearance = true;
+//    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
+//
+//
+//    memset(&scanrsp, 0, sizeof(scanrsp));
+//    scanrsp.uuids_complete.uuid_cnt = sizeof(adv_uuids) / sizeof(adv_uuids[0]);
+//    scanrsp.uuids_complete.p_uuids  = adv_uuids;
+//
+//    err_code = ble_advdata_set(&advdata, &scanrsp);
+//    APP_ERROR_CHECK(err_code);
+//}
 
 
 /**@brief Function for handling write events to the LED characteristic.
@@ -245,9 +264,9 @@ static void timer_write_handler(ble_ims_t * p_lbs, uint8_t timer_state)
 	else
 	{
 		err_code = app_timer_stop(m_sampling_timer_id);
-		gyro_y_raw_angle = 0;
+		gyro_x_raw_angle = 0;
 		acc_x_angle = 0;
-		gyro_y_angle = 0;
+		gyro_x_angle = 0;
 	}
 	APP_ERROR_CHECK(err_code);
 
@@ -291,6 +310,8 @@ static void services_init(void)
 
 	err_code = ble_nus_init(&m_nus, &nus_init);
 	APP_ERROR_CHECK(err_code);
+
+	hid_services_init(&m_hids, &m_bas);
 }
 
 
@@ -352,25 +373,25 @@ static void conn_params_init(void)
 
 /**@brief Function for starting advertising.
  */
-static void advertising_start(void)
-{
-    uint32_t             err_code;
-    ble_gap_adv_params_t adv_params;
-
-    // Start advertising
-    memset(&adv_params, 0, sizeof(adv_params));
-
-    adv_params.type        = BLE_GAP_ADV_TYPE_ADV_IND;
-    adv_params.p_peer_addr = NULL;
-    adv_params.fp          = BLE_GAP_ADV_FP_ANY;
-    adv_params.interval    = APP_ADV_INTERVAL;
-    adv_params.timeout     = APP_ADV_TIMEOUT_IN_SECONDS;
-
-    err_code = sd_ble_gap_adv_start(&adv_params);
-    APP_ERROR_CHECK(err_code);
-    bsp_board_led_on(ADVERTISING_LED_PIN);
-//    NRF_LOG_INFO("Advertising started...\r\n");
-}
+//static void advertising_start(void)
+//{
+//    uint32_t             err_code;
+//    ble_gap_adv_params_t adv_params;
+//
+//    // Start advertising
+//    memset(&adv_params, 0, sizeof(adv_params));
+//
+//    adv_params.type        = BLE_GAP_ADV_TYPE_ADV_IND;
+//    adv_params.p_peer_addr = NULL;
+//    adv_params.fp          = BLE_GAP_ADV_FP_ANY;
+//    adv_params.interval    = APP_ADV_INTERVAL;
+//    adv_params.timeout     = APP_ADV_TIMEOUT_IN_SECONDS;
+//
+//    err_code = sd_ble_gap_adv_start(&adv_params);
+//    APP_ERROR_CHECK(err_code);
+//    bsp_board_led_on(ADVERTISING_LED_PIN);
+////    NRF_LOG_INFO("Advertising started...\r\n");
+//}
 
 
 /**@brief Function for handling the Application's BLE stack events.
@@ -380,6 +401,30 @@ static void advertising_start(void)
 static void on_ble_evt(ble_evt_t * p_ble_evt)
 {
     uint32_t err_code;
+
+    switch (p_ble_evt->header.evt_id) {
+		case BLE_GAP_EVT_CONNECTED:
+		    NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONNECTED\r\n");
+			break;
+		case BLE_GAP_EVT_CONN_PARAM_UPDATE:
+			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONN_PARAM_UPDATE\r\n");
+			break;
+		case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_SEC_PARAMS_REQUEST\r\n");
+			break;
+		case BLE_GAP_EVT_CONN_SEC_UPDATE:
+			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONN_SEC_UPDATE\r\n");
+			break;
+		case BLE_GAP_EVT_AUTH_STATUS:
+			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_AUTH_STATUS\r\n");
+			break;
+		case BLE_GATTS_EVT_WRITE:
+			NRF_LOG_INFO("BLE evt: BLE_GATTS_EVT_WRITE\r\n");
+			break;
+		default:
+			NRF_LOG_INFO("BLE evt: %d\r\n", p_ble_evt->header.evt_id);
+			break;
+	}
 
     switch (p_ble_evt->header.evt_id)
     {
@@ -393,25 +438,35 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
             APP_ERROR_CHECK(err_code);
             break; // BLE_GAP_EVT_CONNECTED
 
+        case BLE_EVT_TX_COMPLETE:
+            // Send next key event
+            (void) buffer_dequeue(true);
+            break; // BLE_EVT_TX_COMPLETE
+
         case BLE_GAP_EVT_DISCONNECTED:
 //            NRF_LOG_INFO("Disconnected\r\n");
 //            bsp_board_led_off(CONNECTED_LED_PIN); // Commented when using PWM
+        	// Dequeue all keys without transmission.
+			(void) buffer_dequeue(false);
+			hid_reset_caps_lock_state();
+			hid_pm_update_whitelist();
+
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
 
             err_code = app_button_disable();
             APP_ERROR_CHECK(err_code);
 
-            advertising_start();
+//            advertising_start();
             break; // BLE_GAP_EVT_DISCONNECTED
 
-        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-            // Pairing not supported
-            err_code = sd_ble_gap_sec_params_reply(m_conn_handle,
-                                                   BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP,
-                                                   NULL,
-                                                   NULL);
-            APP_ERROR_CHECK(err_code);
-            break; // BLE_GAP_EVT_SEC_PARAMS_REQUEST
+//        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
+//            // Pairing not supported
+//            err_code = sd_ble_gap_sec_params_reply(m_conn_handle,
+//                                                   BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP,
+//                                                   NULL,
+//                                                   NULL);
+//            APP_ERROR_CHECK(err_code);
+//            break; // BLE_GAP_EVT_SEC_PARAMS_REQUEST
 
         case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
@@ -493,11 +548,40 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
  */
 static void ble_evt_dispatch(ble_evt_t * p_ble_evt)
 {
+	/** The Connection state module has to be fed BLE events in order to function correctly
+	 * Remember to call ble_conn_state_on_ble_evt before calling any ble_conns_state_* functions. */
+	ble_conn_state_on_ble_evt(p_ble_evt);
+	hid_pm_on_ble_evt(p_ble_evt);
+	ble_advertising_on_ble_evt(p_ble_evt);
+
     on_ble_evt(p_ble_evt);
     ble_conn_params_on_ble_evt(p_ble_evt);
     ble_lbs_on_ble_evt(&m_lbs, p_ble_evt);
     ble_ims_on_ble_evt(&m_ims, p_ble_evt);
     ble_nus_on_ble_evt(&m_nus, p_ble_evt);
+    ble_hids_on_ble_evt(&m_hids, p_ble_evt);
+    ble_bas_on_ble_evt(&m_bas, p_ble_evt);
+}
+
+
+/**@brief   Function for dispatching a system event to interested modules.
+ *
+ * @details This function is called from the System event interrupt handler after a system
+ *          event has been received.
+ *
+ * @param[in]   sys_evt   System stack event.
+ */
+static void sys_evt_dispatch(uint32_t sys_evt)
+{
+	NRF_LOG_INFO("Sys evt: %d\r\n", sys_evt);
+    // Dispatch the system event to the fstorage module, where it will be
+    // dispatched to the Flash Data Storage (FDS) module.
+    fs_sys_event_handler(sys_evt);
+
+    // Dispatch to the Advertising module last, since it will check if there are any
+    // pending flash operations in fstorage. Let fstorage process system events first,
+    // so that it can report correctly to the Advertising module.
+    ble_advertising_on_sys_evt(sys_evt);
 }
 
 
@@ -534,6 +618,10 @@ static void ble_stack_init(void)
     // Subscribe for BLE events.
     err_code = softdevice_ble_evt_handler_set(ble_evt_dispatch);
     APP_ERROR_CHECK(err_code);
+
+    // Register with the SoftDevice handler module for BLE events.
+    err_code = softdevice_sys_evt_handler_set(sys_evt_dispatch);
+    APP_ERROR_CHECK(err_code);
 }
 
 
@@ -544,19 +632,20 @@ static void ble_stack_init(void)
  */
 static void button_event_handler(uint8_t pin_no, uint8_t button_action)
 {
-    uint32_t err_code;
+//    uint32_t err_code;
 
     switch (pin_no)
     {
         case LEDBUTTON_BUTTON_PIN:
             NRF_LOG_INFO("Send button state change.\r\n");            
-            err_code = ble_lbs_on_button_change(&m_lbs, button_action);
-            if (err_code != NRF_SUCCESS &&
-                err_code != BLE_ERROR_INVALID_CONN_HANDLE &&
-                err_code != NRF_ERROR_INVALID_STATE)
-            {
-                APP_ERROR_CHECK(err_code);
-            }
+//            err_code = ble_lbs_on_button_change(&m_lbs, button_action);
+//            if (err_code != NRF_SUCCESS &&
+//                err_code != BLE_ERROR_INVALID_CONN_HANDLE &&
+//                err_code != NRF_ERROR_INVALID_STATE)
+//            {
+//                APP_ERROR_CHECK(err_code);
+//            }
+            send_sample_string_to_peer();
             break;
 
         default:
@@ -652,18 +741,20 @@ int main(void)
 
     err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
-//    NRF_LOG_INFO("Initializing...\r\n");
+    NRF_LOG_INFO("Initializing...\r\n");
 
     buttons_init();
     ble_stack_init();
+    peer_manager_init(false);
     gap_params_init();
     services_init();
-    advertising_init();
+    advertising_init_with_peer_manager();
     conn_params_init();
+    hid_buffer_init();
 
     // Start execution.
     NRF_LOG_INFO("Blinky Start!\r\n");
-    advertising_start();
+    advertising_start_with_peer_manager();
 
     configure(&m_sample_queue);
 
@@ -682,11 +773,11 @@ int main(void)
 				int16_t acc_y = data[(i-1)%2].acc.y.conv;
 				int16_t acc_z = data[(i-1)%2].acc.z.conv;
 
-				int16_t gyro_y_rate = data[(i-1)%2].gyro.y.conv;
+				int16_t gyro_x_rate = data[(i-1)%2].gyro.x.conv;
 
-				gyro_y_raw_angle += gyro_y_rate * 0.00875f * dt;
+				gyro_x_raw_angle += gyro_x_rate * 0.00875f * dt;
 
-				if (!(acc_x == 0 && acc_y == 0 && acc_z == 0 && gyro_y_rate == 0))
+				if (!(acc_x == 0 && acc_y == 0 && acc_z == 0 && gyro_x_rate == 0))
 				{
 					if (acc_z != 0)
 					{
@@ -694,18 +785,40 @@ int main(void)
 						acc_y_angle = -atan((double)acc_y / acc_z) * 180.0 / M_PI;
 					}
 
-					gyro_y_angle = comp_filter(gyro_y_rate, acc_x_angle, dt);
-					gyro_y_angle_mahony = mahony_filter(gyro_y_rate, acc_x_angle, dt);
-					gyro_y_angle_kalman = kalman_filter(gyro_y_rate, acc_x_angle, dt);
+					gyro_x_angle = comp_filter(gyro_x_rate, acc_y_angle, dt);
+					gyro_x_angle_mahony = mahony_filter(gyro_x_rate, acc_y_angle, dt);
+					gyro_x_angle_kalman = kalman_filter(gyro_x_rate, acc_y_angle, dt);
 				}
 
-				NRF_LOG_RAW_INFO("Complementary:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle));
-				NRF_LOG_RAW_INFO("\t");
-				NRF_LOG_RAW_INFO("Mahony:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_mahony));
-				NRF_LOG_RAW_INFO("\t");
-				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
-				NRF_LOG_RAW_INFO("\r\n")
+//				NRF_LOG_RAW_INFO("Complementary:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle));
+//				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO("Mahony:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_mahony));
+//				NRF_LOG_RAW_INFO("\t");
+//				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
+//				NRF_LOG_RAW_INFO("\r\n")
 			}
+			NRF_LOG_RAW_INFO("100 ms angle: "NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
+			NRF_LOG_RAW_INFO("\r\n");
+
+			if (!m_key_last_state_pressed && gyro_x_angle > 25)
+			{
+					err_code = send_key_scan_code(LEFT_KEY);
+					m_key_last_state_pressed = true;
+			}
+			else if (!m_key_last_state_pressed && gyro_x_angle < -25)
+			{
+				err_code = send_key_scan_code(RIGHT_KEY);
+				m_key_last_state_pressed = true;
+			}
+			else if (m_key_last_state_pressed && !(gyro_x_angle > 25 || gyro_x_angle < -25))
+			{
+					err_code = send_key_scan_code(KEY_RELEASE);
+					m_key_last_state_pressed = false;
+			}
+			if (err_code != NRF_SUCCESS) {
+				NRF_LOG_INFO("Key notif failed %d\r\n", err_code);
+			}
+
 			NRF_LOG_FLUSH();
 
 //	    	char buffer[20];
@@ -723,7 +836,7 @@ int main(void)
 //        bsp_board_led_invert(LEDBUTTON_LED_PIN);
 //        nrf_delay_ms(1000);
 
-    	uint16_t duty_cycle = fabs(gyro_y_angle_mahony / 90.0) * 100;
+    	uint16_t duty_cycle = fabs(gyro_x_angle_mahony / 90.0) * 100;
 		/* Set the duty cycle - keep trying until PWM is ready... */
 		while (app_pwm_channel_duty_set(&PWM1, 0, duty_cycle) == NRF_ERROR_BUSY);
 
