@@ -40,12 +40,12 @@
 #include "nrf_queue.h"
 #include "ble_nus.h"
 #include "filters.h"
-#include "app_pwm.h"
 #include "hid.h"
 #include "hid_peer_manager.h"
 #include "ble_advertising.h"
 #include "fstorage.h"
 #include "ble_conn_state.h"
+#include "pwm_adv_indication.h"
 
 #define NRF_LOG_MODULE_NAME "APP"
 #include "nrf_log.h"
@@ -101,8 +101,6 @@ APP_TIMER_DEF(m_notification_timer_id);
 APP_TIMER_DEF(m_sampling_timer_id);
 static volatile uint16_t m_counter_value = 0;
 
-APP_PWM_INSTANCE(PWM1,1);                   // Create the instance "PWM1" using TIMER1.
-
 #define SAMPLING_MS 5
 
 #define NOTIFICATION_INTERVAL           APP_TIMER_TICKS(40, APP_TIMER_PRESCALER)
@@ -124,6 +122,8 @@ static double acc_y_angle = 0;
 #define RIGHT_KEY 0x4f // Keyboard Right Arrow
 #define KEY_RELEASE 0x00 // Empty code signifies key release
 static bool m_key_last_state_pressed = true;
+
+static bool is_advertising = false;
 
 /**@brief Function for assert macro callback.
  *
@@ -431,6 +431,7 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
         case BLE_GAP_EVT_CONNECTED:
 //            NRF_LOG_INFO("Connected\r\n");
 //            bsp_board_led_on(CONNECTED_LED_PIN); // Commented when using PWM
+        	is_advertising = false;
             bsp_board_led_off(ADVERTISING_LED_PIN);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
 
@@ -449,15 +450,17 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
         	// Dequeue all keys without transmission.
 			(void) buffer_dequeue(false);
 			hid_reset_caps_lock_state();
-			hid_pm_update_whitelist();
-
+			// Can't do, throws error.
+//			hid_pm_update_whitelist();
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
-
             err_code = app_button_disable();
             APP_ERROR_CHECK(err_code);
-
-//            advertising_start();
+            is_advertising = true; // Timeout and disconnect restart advertising
+//            advertising_start(); // Peer Manager starts advertising automatically
             break; // BLE_GAP_EVT_DISCONNECTED
+        case BLE_GAP_EVT_TIMEOUT:
+        	is_advertising = true;
+        	break; // BLE_GAP_EVT_TIMEOUT
 
 //        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
 //            // Pairing not supported
@@ -704,23 +707,6 @@ static void notification_timeout_handler(void * p_context)
 //    APP_ERROR_CHECK(err_code);
 }
 
-void pwm_ready_callback(uint32_t pwm_id)    // PWM callback function
-{
-
-}
-
-static void pwm_init(void)
-{
-	uint32_t err_code;
-
-	/* 2-channel PWM, 200Hz, output on LED pin. */
-	app_pwm_config_t pwm1_cfg = APP_PWM_DEFAULT_CONFIG_1CH(5000L, 29);
-
-	/* Initialize and enable PWM. */
-	err_code = app_pwm_init(&PWM1, &pwm1_cfg, pwm_ready_callback);
-	APP_ERROR_CHECK(err_code);
-	app_pwm_enable(&PWM1);
-}
 
 /**@brief Function for application main entry.
  */
@@ -737,7 +723,7 @@ int main(void)
     err_code = app_timer_create(&m_notification_timer_id, APP_TIMER_MODE_REPEATED, notification_timeout_handler);
     APP_ERROR_CHECK(err_code);
 
-    pwm_init();
+    pwm_adv_init();
 
     err_code = NRF_LOG_INIT(NULL);
     APP_ERROR_CHECK(err_code);
@@ -755,6 +741,7 @@ int main(void)
     // Start execution.
     NRF_LOG_INFO("Blinky Start!\r\n");
     advertising_start_with_peer_manager();
+    is_advertising = true;
 
     configure(&m_sample_queue);
 
@@ -797,9 +784,10 @@ int main(void)
 //				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
 //				NRF_LOG_RAW_INFO("\r\n")
 			}
-			NRF_LOG_RAW_INFO("100 ms angle: "NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
+			NRF_LOG_RAW_INFO("Calculated angle [100ms]: "NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
 			NRF_LOG_RAW_INFO("\r\n");
 
+			// Send Left/Right arrow key notification when angle goes above or below 25 degrees
 			if (!m_key_last_state_pressed && gyro_x_angle > 25)
 			{
 					err_code = send_key_scan_code(LEFT_KEY);
@@ -816,31 +804,22 @@ int main(void)
 					m_key_last_state_pressed = false;
 			}
 			if (err_code != NRF_SUCCESS) {
-				NRF_LOG_INFO("Key notif failed %d\r\n", err_code);
+				NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
 			}
 
 			NRF_LOG_FLUSH();
-
-//	    	char buffer[20];
-//			int length = sprintf(buffer, "%.2f %.2f",
-//					data[0].acc.x.conv * 0.061f,
-////					new_sample.acc.y.conv * 0.061f);
-//					data[0].acc.z.conv * 0.061f);
-//			err_code = ble_nus_string_send(&m_nus, (uint8_t *) buffer, length);
-//			if (err_code != NRF_ERROR_INVALID_STATE)
-//			{
-//				APP_ERROR_CHECK(err_code);
-//			}
 		}
 
 //        bsp_board_led_invert(LEDBUTTON_LED_PIN);
 //        nrf_delay_ms(1000);
 
-    	uint16_t duty_cycle = fabs(gyro_x_angle_mahony / 90.0) * 100;
-		/* Set the duty cycle - keep trying until PWM is ready... */
-		while (app_pwm_channel_duty_set(&PWM1, 0, duty_cycle) == NRF_ERROR_BUSY);
+    	bool emptyLogBuffer = !NRF_LOG_PROCESS();
 
-        if (NRF_LOG_PROCESS() == false)
+        if (is_advertising)
+        {
+			run_pwm_adv_indication();
+		}
+        else if (emptyLogBuffer)
         {
             power_manage();
         }

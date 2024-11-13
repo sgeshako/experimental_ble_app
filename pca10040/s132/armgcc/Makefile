@@ -69,6 +69,7 @@ SRC_FILES += \
   $(SDK_ROOT)/components/ble/ble_advertising/ble_advertising.c \
   $(SDK_ROOT)/components/ble/common/ble_conn_state.c \
   $(SDK_ROOT)/components/libraries/util/sdk_mapped_flags.c \
+  $(PROJ_DIR)/pwm/pwm_adv_indication.c \
 
 # Include folders common to all targets
 INC_FOLDERS += \
@@ -176,6 +177,7 @@ INC_FOLDERS += \
   $(PROJ_DIR)/spi \
   $(PROJ_DIR)/services \
   $(PROJ_DIR)/hid \
+  $(PROJ_DIR)/pwm \
 
 # Libraries common to all targets
 LIB_FILES += \
