@@ -153,6 +153,25 @@ static void leds_init(void)
 }
 
 
+static void sampling_timeout_handler(void * p_context)
+{
+    UNUSED_PARAMETER(p_context);
+
+    read_sensor_non_blocking();
+}
+
+static void notification_timeout_handler(void * p_context)
+{
+    UNUSED_PARAMETER(p_context);
+
+    m_counter_value++;
+
+	uint32_t err_code;
+
+    err_code = ble_ims_on_counter_change(&m_ims, m_counter_value);
+    APP_ERROR_CHECK(err_code);
+}
+
 /**@brief Function for the Timer initialization.
  *
  * @details Initializes the timer module.
@@ -162,7 +181,12 @@ static void timers_init(void)
     // Initialize timer module, making it use the scheduler
     APP_TIMER_INIT(APP_TIMER_PRESCALER, APP_TIMER_OP_QUEUE_SIZE, false);
 
-    // app_timer_create can come here
+    ret_code_t err_code;
+    err_code = app_timer_create(&m_sampling_timer_id, APP_TIMER_MODE_REPEATED, sampling_timeout_handler);
+    APP_ERROR_CHECK(err_code);
+
+    err_code = app_timer_create(&m_notification_timer_id, APP_TIMER_MODE_REPEATED, notification_timeout_handler);
+    APP_ERROR_CHECK(err_code);
 }
 
 
@@ -197,36 +221,6 @@ static void gap_params_init(void)
     err_code = sd_ble_gap_ppcp_set(&gap_conn_params);
     APP_ERROR_CHECK(err_code);
 }
-
-
-/**@brief Function for initializing the Advertising functionality.
- *
- * @details Encodes the required advertising data and passes it to the stack.
- *          Also builds a structure to be passed to the stack when starting advertising.
- */
-//static void advertising_init(void)
-//{
-//    uint32_t      err_code;
-//    ble_advdata_t advdata;
-//    ble_advdata_t scanrsp;
-//
-//    ble_uuid_t adv_uuids[] = {{LBS_UUID_SERVICE, m_lbs.uuid_type}};
-//
-//    // Build and set advertising data
-//    memset(&advdata, 0, sizeof(advdata));
-//
-//    advdata.name_type          = BLE_ADVDATA_FULL_NAME;
-//    advdata.include_appearance = true;
-//    advdata.flags              = BLE_GAP_ADV_FLAGS_LE_ONLY_GENERAL_DISC_MODE;
-//
-//
-//    memset(&scanrsp, 0, sizeof(scanrsp));
-//    scanrsp.uuids_complete.uuid_cnt = sizeof(adv_uuids) / sizeof(adv_uuids[0]);
-//    scanrsp.uuids_complete.p_uuids  = adv_uuids;
-//
-//    err_code = ble_advdata_set(&advdata, &scanrsp);
-//    APP_ERROR_CHECK(err_code);
-//}
 
 
 /**@brief Function for handling write events to the LED characteristic.
@@ -372,28 +366,6 @@ static void conn_params_init(void)
 }
 
 
-/**@brief Function for starting advertising.
- */
-//static void advertising_start(void)
-//{
-//    uint32_t             err_code;
-//    ble_gap_adv_params_t adv_params;
-//
-//    // Start advertising
-//    memset(&adv_params, 0, sizeof(adv_params));
-//
-//    adv_params.type        = BLE_GAP_ADV_TYPE_ADV_IND;
-//    adv_params.p_peer_addr = NULL;
-//    adv_params.fp          = BLE_GAP_ADV_FP_ANY;
-//    adv_params.interval    = APP_ADV_INTERVAL;
-//    adv_params.timeout     = APP_ADV_TIMEOUT_IN_SECONDS;
-//
-//    err_code = sd_ble_gap_adv_start(&adv_params);
-//    APP_ERROR_CHECK(err_code);
-//    bsp_board_led_on(ADVERTISING_LED_PIN);
-////    NRF_LOG_INFO("Advertising started...\r\n");
-//}
-
 static void set_advertising(bool active);
 
 /**@brief Function for handling the Application's BLE stack events.
@@ -460,21 +432,13 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
             set_advertising(true); // Timeout and disconnect restart advertising
 //            advertising_start(); // Peer Manager starts advertising automatically
             break; // BLE_GAP_EVT_DISCONNECTED
+
         case BLE_GAP_EVT_TIMEOUT:
         	if (p_ble_evt->evt.gap_evt.params.timeout.src == BLE_GAP_TIMEOUT_SRC_CONN)
         	{
 				set_advertising(true);
 			}
         	break; // BLE_GAP_EVT_TIMEOUT
-
-//        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-//            // Pairing not supported
-//            err_code = sd_ble_gap_sec_params_reply(m_conn_handle,
-//                                                   BLE_GAP_SEC_STATUS_PAIRING_NOT_SUPP,
-//                                                   NULL,
-//                                                   NULL);
-//            APP_ERROR_CHECK(err_code);
-//            break; // BLE_GAP_EVT_SEC_PARAMS_REQUEST
 
         case BLE_GATTS_EVT_SYS_ATTR_MISSING:
             // No system attributes have been stored.
@@ -690,27 +654,6 @@ static void power_manage(void)
     APP_ERROR_CHECK(err_code);
 }
 
-static void sampling_timeout_handler(void * p_context)
-{
-    UNUSED_PARAMETER(p_context);
-
-    read_sensor_non_blocking();
-}
-
-static void notification_timeout_handler(void * p_context)
-{
-    UNUSED_PARAMETER(p_context);
-
-    m_counter_value++;
-
-	uint32_t err_code;
-
-    err_code = ble_ims_on_counter_change(&m_ims, m_counter_value);
-    if (err_code != NRF_SUCCESS) {
-        NRF_LOG_INFO("BLE counter change failed: %d", err_code);
-	}
-//    APP_ERROR_CHECK(err_code);
-}
 
 static void set_advertising(bool active)
 {
@@ -733,11 +676,6 @@ int main(void)
     leds_init();
     timers_init();
 
-    err_code = app_timer_create(&m_sampling_timer_id, APP_TIMER_MODE_REPEATED, sampling_timeout_handler);
-    APP_ERROR_CHECK(err_code);
-    err_code = app_timer_create(&m_notification_timer_id, APP_TIMER_MODE_REPEATED, notification_timeout_handler);
-    APP_ERROR_CHECK(err_code);
-
     pwm_adv_init();
 
     err_code = NRF_LOG_INIT(NULL);
@@ -758,7 +696,7 @@ int main(void)
     advertising_start_with_peer_manager();
     set_advertising(true);
 
-    configure(&m_sample_queue);
+    spi_sensor_init(&m_sample_queue);
 
     // Enter main loop.
     for (;;)
@@ -805,8 +743,8 @@ int main(void)
 			// Send Left/Right arrow key notification when angle goes above or below 25 degrees
 			if (!m_key_last_state_pressed && gyro_x_angle > 25)
 			{
-					err_code = send_key_scan_code(LEFT_KEY);
-					m_key_last_state_pressed = true;
+				err_code = send_key_scan_code(LEFT_KEY);
+				m_key_last_state_pressed = true;
 			}
 			else if (!m_key_last_state_pressed && gyro_x_angle < -25)
 			{
@@ -815,8 +753,8 @@ int main(void)
 			}
 			else if (m_key_last_state_pressed && !(gyro_x_angle > 25 || gyro_x_angle < -25))
 			{
-					err_code = send_key_scan_code(KEY_RELEASE);
-					m_key_last_state_pressed = false;
+				err_code = send_key_scan_code(KEY_RELEASE);
+				m_key_last_state_pressed = false;
 			}
 			if (err_code != NRF_SUCCESS) {
 				NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
