@@ -123,7 +123,8 @@ static double acc_y_angle = 0;
 #define KEY_RELEASE 0x00 // Empty code signifies key release
 static bool m_key_last_state_pressed = true;
 
-static bool is_advertising = false;
+// Box flag in array to prevent some weird compiler optimization.
+static uint8_t is_advertising[1] = {0};
 
 /**@brief Function for assert macro callback.
  *
@@ -393,6 +394,7 @@ static void conn_params_init(void)
 ////    NRF_LOG_INFO("Advertising started...\r\n");
 //}
 
+static void set_advertising(bool active);
 
 /**@brief Function for handling the Application's BLE stack events.
  *
@@ -431,7 +433,7 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
         case BLE_GAP_EVT_CONNECTED:
 //            NRF_LOG_INFO("Connected\r\n");
 //            bsp_board_led_on(CONNECTED_LED_PIN); // Commented when using PWM
-        	is_advertising = false;
+        	set_advertising(false);
             bsp_board_led_off(ADVERTISING_LED_PIN);
             m_conn_handle = p_ble_evt->evt.gap_evt.conn_handle;
 
@@ -455,11 +457,14 @@ static void on_ble_evt(ble_evt_t * p_ble_evt)
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
             err_code = app_button_disable();
             APP_ERROR_CHECK(err_code);
-            is_advertising = true; // Timeout and disconnect restart advertising
+            set_advertising(true); // Timeout and disconnect restart advertising
 //            advertising_start(); // Peer Manager starts advertising automatically
             break; // BLE_GAP_EVT_DISCONNECTED
         case BLE_GAP_EVT_TIMEOUT:
-        	is_advertising = true;
+        	if (p_ble_evt->evt.gap_evt.params.timeout.src == BLE_GAP_TIMEOUT_SRC_CONN)
+        	{
+				set_advertising(true);
+			}
         	break; // BLE_GAP_EVT_TIMEOUT
 
 //        case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
@@ -707,6 +712,16 @@ static void notification_timeout_handler(void * p_context)
 //    APP_ERROR_CHECK(err_code);
 }
 
+static void set_advertising(bool active)
+{
+	is_advertising[0] = active;
+}
+
+static bool is_advertising_active()
+{
+	return is_advertising[0] != 0;
+}
+
 
 /**@brief Function for application main entry.
  */
@@ -734,14 +749,14 @@ int main(void)
     peer_manager_init(false);
     gap_params_init();
     services_init();
-    advertising_init_with_peer_manager();
+    advertising_init_with_peer_manager(set_advertising);
     conn_params_init();
     hid_buffer_init();
 
     // Start execution.
     NRF_LOG_INFO("Blinky Start!\r\n");
     advertising_start_with_peer_manager();
-    is_advertising = true;
+    set_advertising(true);
 
     configure(&m_sample_queue);
 
@@ -815,7 +830,7 @@ int main(void)
 
     	bool emptyLogBuffer = !NRF_LOG_PROCESS();
 
-        if (is_advertising)
+        if (is_advertising_active())
         {
 			run_pwm_adv_indication();
 		}

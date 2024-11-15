@@ -3,6 +3,7 @@
 #include "ble_conn_state.h"
 #include "ble_advertising.h"
 #include "ble_srv_common.h"
+#include "pwm_adv_indication.h"
 
 #include "nrf_log.h"
 
@@ -29,6 +30,8 @@ static uint32_t       m_whitelist_peer_cnt;                                 /**<
 static bool           m_is_wl_changed;                                      /**< Indicates if the whitelist has been changed since last time it has been updated in the Peer Manager. */
 
 static ble_uuid_t m_adv_uuids[] = {{BLE_UUID_HUMAN_INTERFACE_DEVICE_SERVICE, BLE_UUID_TYPE_BLE}};
+
+static hid_pm_set_advertising_handler_t m_set_advertising = NULL;
 
 /**@brief Fetch the list of peer manager peer IDs.
  *
@@ -80,35 +83,35 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
     {
         case BLE_ADV_EVT_DIRECTED:
             NRF_LOG_INFO("BLE_ADV_EVT_DIRECTED\r\n");
-//            err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING_DIRECTED);
-//            APP_ERROR_CHECK(err_code);
+            set_pwm_adv_mode(PWM_ADV_INDICATE_DIRECTED_ADVERTISING);
             break; //BLE_ADV_EVT_DIRECTED
 
         case BLE_ADV_EVT_FAST:
             NRF_LOG_INFO("BLE_ADV_EVT_FAST\r\n");
-//            err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING);
-//            APP_ERROR_CHECK(err_code);
+            set_pwm_adv_mode(PWM_ADV_INDICATE_FAST_ADVERTISING);
             break; //BLE_ADV_EVT_FAST
 
         case BLE_ADV_EVT_SLOW:
             NRF_LOG_INFO("BLE_ADV_EVT_SLOW\r\n");
-//            err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING_SLOW);
-//            APP_ERROR_CHECK(err_code);
+            set_pwm_adv_mode(PWM_ADV_INDICATE_SLOW_ADVERTISING);
             break; //BLE_ADV_EVT_SLOW
 
         case BLE_ADV_EVT_FAST_WHITELIST:
             NRF_LOG_INFO("BLE_ADV_EVT_FAST_WHITELIST\r\n");
-//            err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING_WHITELIST);
-//            APP_ERROR_CHECK(err_code);
+            set_pwm_adv_mode(PWM_ADV_INDICATE_FAST_WHITELIST_ADVERTISING);
             break; //BLE_ADV_EVT_FAST_WHITELIST
 
         case BLE_ADV_EVT_SLOW_WHITELIST:
             NRF_LOG_INFO("BLE_ADV_EVT_SLOW_WHITELIST\r\n");
-//            err_code = bsp_indication_set(BSP_INDICATE_ADVERTISING_WHITELIST);
-//            APP_ERROR_CHECK(err_code);
+            set_pwm_adv_mode(PWM_ADV_INDICATE_SLOW_WHITELIST_ADVERTISING);
             break; //BLE_ADV_EVT_SLOW_WHITELIST
 
         case BLE_ADV_EVT_IDLE:
+        	NRF_LOG_INFO("Advertising idle mode...\r\n");
+        	if (m_set_advertising != NULL)
+        	{
+        		m_set_advertising(false);
+			}
 //            sleep_mode_enter();
             break; //BLE_ADV_EVT_IDLE
 
@@ -159,7 +162,7 @@ static void on_adv_evt(ble_adv_evt_t ble_adv_evt)
 
 /**@brief Function for initializing the Advertising functionality.
  */
-void advertising_init_with_peer_manager(void)
+void advertising_init_with_peer_manager(hid_pm_set_advertising_handler_t set_advertising)
 {
     uint32_t               err_code;
     uint8_t                adv_flags;
@@ -195,6 +198,8 @@ void advertising_init_with_peer_manager(void)
                                     on_adv_evt,
                                     ble_advertising_error_handler);
     APP_ERROR_CHECK(err_code);
+
+    m_set_advertising = set_advertising;
 }
 
 
@@ -235,6 +240,8 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
 {
     ret_code_t err_code;
 
+    NRF_LOG_INFO("PM evt: %d\r\n", p_evt->evt_id);
+
     switch (p_evt->evt_id)
     {
         case PM_EVT_BONDED_PEER_CONNECTED:
@@ -254,7 +261,7 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
             // Note: You should check on what kind of white list policy your application should use.
             if (p_evt->params.conn_sec_succeeded.procedure == PM_LINK_SECURED_PROCEDURE_BONDING)
             {
-                NRF_LOG_INFO("New Bond, add the peer to the whitelist if possible\r\n");
+                NRF_LOG_INFO("New Bond, add the peer %d to the whitelist if possible\r\n", m_peer_id);
                 NRF_LOG_INFO("\tm_whitelist_peer_cnt %d, MAX_PEERS_WLIST %d\r\n",
                                m_whitelist_peer_cnt + 1,
                                BLE_GAP_WHITELIST_ADDR_MAX_COUNT);
@@ -276,6 +283,10 @@ static void pm_evt_handler(pm_evt_t const * p_evt)
              * Sometimes, it cannot be restarted until the link is disconnected and reconnected.
              * Sometimes it is impossible, to secure the link, or the peer device does not support it.
              * How to handle this error is highly application dependent. */
+			NRF_LOG_INFO("Procedure: %d\tError src: %d\tError: %d\r\n",
+					p_evt->params.conn_sec_failed.procedure,
+					p_evt->params.conn_sec_failed.error_src,
+					p_evt->params.conn_sec_failed.error);
         } break;
 
         case PM_EVT_CONN_SEC_CONFIG_REQ:
@@ -397,6 +408,7 @@ void hid_pm_update_whitelist(void)
 		ret_code_t err_code = pm_whitelist_set(m_whitelist_peers, m_whitelist_peer_cnt);
 		APP_ERROR_CHECK(err_code);
 
+		NRF_LOG_INFO("pm_update_whitelist: peer1: %X cnt: %d ...\r\n", m_whitelist_peers[0], m_whitelist_peer_cnt);
 		err_code = pm_device_identities_list_set(m_whitelist_peers, m_whitelist_peer_cnt);
 		if (err_code != NRF_ERROR_NOT_SUPPORTED)
 		{
