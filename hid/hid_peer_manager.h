@@ -8,9 +8,12 @@
  */
 void peer_list_get(pm_peer_id_t * p_peers, uint32_t * p_size);
 
+/**@brief Handler callback for setting Advertising state in main. */
+typedef void (*hid_pm_set_advertising_handler_t)(bool active);
+
 /**@brief Function for initializing the Advertising functionality.
  */
-void advertising_init_with_peer_manager(void);
+void advertising_init_with_peer_manager(hid_pm_set_advertising_handler_t set_advertising);
 
 /**@brief Function for starting advertising with Peer Manager.
  */
