@@ -122,6 +122,8 @@ static double acc_y_angle = 0;
 #define RIGHT_KEY 0x4f // Keyboard Right Arrow
 #define KEY_RELEASE 0x00 // Empty code signifies key release
 static bool m_key_last_state_pressed = true;
+static int8_t current_key_command = 0;
+static int8_t debounce_countdown = 3;
 
 // Box flag in array to prevent some weird compiler optimization.
 static uint8_t is_advertising[1] = {0};
@@ -375,30 +377,6 @@ static void set_advertising(bool active);
 static void on_ble_evt(ble_evt_t * p_ble_evt)
 {
     uint32_t err_code;
-
-    switch (p_ble_evt->header.evt_id) {
-		case BLE_GAP_EVT_CONNECTED:
-		    NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONNECTED\r\n");
-			break;
-		case BLE_GAP_EVT_CONN_PARAM_UPDATE:
-			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONN_PARAM_UPDATE\r\n");
-			break;
-		case BLE_GAP_EVT_SEC_PARAMS_REQUEST:
-			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_SEC_PARAMS_REQUEST\r\n");
-			break;
-		case BLE_GAP_EVT_CONN_SEC_UPDATE:
-			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_CONN_SEC_UPDATE\r\n");
-			break;
-		case BLE_GAP_EVT_AUTH_STATUS:
-			NRF_LOG_INFO("BLE evt: BLE_GAP_EVT_AUTH_STATUS\r\n");
-			break;
-		case BLE_GATTS_EVT_WRITE:
-			NRF_LOG_INFO("BLE evt: BLE_GATTS_EVT_WRITE\r\n");
-			break;
-		default:
-			NRF_LOG_INFO("BLE evt: %d\r\n", p_ble_evt->header.evt_id);
-			break;
-	}
 
     switch (p_ble_evt->header.evt_id)
     {
@@ -703,6 +681,11 @@ int main(void)
     {
     	if (nrf_queue_is_full(&m_sample_queue))
     	{
+    		if (debounce_countdown >= 0)
+    		{
+				debounce_countdown--;
+			}
+
 			int i = 0;
 			sample_combo_t data[2];
 			memset(data, 0, sizeof(data));
@@ -722,12 +705,60 @@ int main(void)
 					if (acc_z != 0)
 					{
 						acc_x_angle = -atan((double)acc_x / acc_z) * 180.0 / M_PI;
-						acc_y_angle = -atan((double)acc_y / acc_z) * 180.0 / M_PI;
+						acc_y_angle = atan((double)acc_y / acc_z) * 180.0 / M_PI;
 					}
 
 					gyro_x_angle = comp_filter(gyro_x_rate, acc_y_angle, dt);
 					gyro_x_angle_mahony = mahony_filter(gyro_x_rate, acc_y_angle, dt);
 					gyro_x_angle_kalman = kalman_filter(gyro_x_rate, acc_y_angle, dt);
+				}
+
+				// Send Left/Right arrow key notification when angle goes above or below 10 degrees
+				if (!m_key_last_state_pressed && gyro_x_angle > 10)
+				{
+					if (debounce_countdown == -1)
+					{
+						debounce_countdown = 2;
+					}
+					else if (debounce_countdown == 0)
+					{
+						err_code = send_key_scan_code(RIGHT_KEY);
+						m_key_last_state_pressed = true;
+						debounce_countdown = 1;
+						current_key_command = 10;
+					}
+				}
+				else if (!m_key_last_state_pressed && gyro_x_angle < -10)
+				{
+					if (debounce_countdown == -1)
+					{
+						debounce_countdown = 2;
+					}
+					else if (debounce_countdown == 0)
+					{
+						err_code = send_key_scan_code(LEFT_KEY);
+						m_key_last_state_pressed = true;
+						debounce_countdown = 1;
+						current_key_command = -10;
+					}
+				}
+				else if (!m_key_last_state_pressed && !(gyro_x_angle > 10 || gyro_x_angle < -10))
+				{
+					// Oops, debounce failed. Dropped below +-10 too fast
+					debounce_countdown = -1;
+				}
+				else if (m_key_last_state_pressed && !(gyro_x_angle > 10 || gyro_x_angle < -10))
+				{
+					if (debounce_countdown <= 0) {
+						err_code = send_key_scan_code(KEY_RELEASE);
+						m_key_last_state_pressed = false;
+						debounce_countdown = 2;
+						current_key_command = 0;
+					}
+				}
+
+				if (err_code != NRF_SUCCESS) {
+					NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
 				}
 
 //				NRF_LOG_RAW_INFO("Complementary:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle));
@@ -736,28 +767,10 @@ int main(void)
 //				NRF_LOG_RAW_INFO("\t");
 //				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
 //				NRF_LOG_RAW_INFO("\r\n")
-			}
-			NRF_LOG_RAW_INFO("Calculated angle [100ms]: "NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
-			NRF_LOG_RAW_INFO("\r\n");
-
-			// Send Left/Right arrow key notification when angle goes above or below 25 degrees
-			if (!m_key_last_state_pressed && gyro_x_angle > 25)
-			{
-				err_code = send_key_scan_code(LEFT_KEY);
-				m_key_last_state_pressed = true;
-			}
-			else if (!m_key_last_state_pressed && gyro_x_angle < -25)
-			{
-				err_code = send_key_scan_code(RIGHT_KEY);
-				m_key_last_state_pressed = true;
-			}
-			else if (m_key_last_state_pressed && !(gyro_x_angle > 25 || gyro_x_angle < -25))
-			{
-				err_code = send_key_scan_code(KEY_RELEASE);
-				m_key_last_state_pressed = false;
-			}
-			if (err_code != NRF_SUCCESS) {
-				NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
+				NRF_LOG_RAW_INFO(NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
+				NRF_LOG_RAW_INFO("\t");
+				NRF_LOG_RAW_INFO("%d", current_key_command);
+				NRF_LOG_RAW_INFO("\r\n");
 			}
 
 			NRF_LOG_FLUSH();
