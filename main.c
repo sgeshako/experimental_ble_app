@@ -121,9 +121,32 @@ static double acc_y_angle = 0;
 #define LEFT_KEY 0x50 // Keyboard Left Arrow
 #define RIGHT_KEY 0x4f // Keyboard Right Arrow
 #define KEY_RELEASE 0x00 // Empty code signifies key release
-static bool m_key_last_state_pressed = true;
+
+typedef enum {
+	IDLE,
+	DEBOUNCE,
+	READY_PRESS,
+	MINIMUM_PRESS_DELAY,
+	READY_RELEASE
+} key_command_state_t;
+
+typedef struct {
+	key_command_state_t next_state[2]; /**< Possible state transitions for 0: Key release and 1: Key press. */
+	uint8_t delay;                     /**< Number of full-buffer readings to delay before next state transition can occur. */
+} state_config_t;
+
+static const state_config_t states[5] = {
+		{ { IDLE, DEBOUNCE }, 0 },              // 0: IDLE
+		{ { IDLE, READY_PRESS }, 1 },           // 1: DEBOUNCE
+		{ { IDLE, MINIMUM_PRESS_DELAY }, 0 },   // 2: READY_PRESS
+		{ { READY_RELEASE, READY_RELEASE }, 1 },// 3: MINIMUM_PRESS_DELAY
+		{ { IDLE, READY_RELEASE }, 0 }          // 4: READY_RELEASE
+};
+
+static key_command_state_t m_current_state = IDLE;
+
 static int8_t current_key_command = 0;
-static int8_t debounce_countdown = 3;
+static uint8_t m_debounce_countdown = 0; /**< Counts from N to 0 during debounce. */
 
 // Box flag in array to prevent some weird compiler optimization.
 static uint8_t is_advertising[1] = {0};
@@ -681,9 +704,9 @@ int main(void)
     {
     	if (nrf_queue_is_full(&m_sample_queue))
     	{
-    		if (debounce_countdown >= 0)
+    		if (m_debounce_countdown > 0)
     		{
-				debounce_countdown--;
+				m_debounce_countdown--;
 			}
 
 			int i = 0;
@@ -714,51 +737,34 @@ int main(void)
 				}
 
 				// Send Left/Right arrow key notification when angle goes above or below 10 degrees
-				if (!m_key_last_state_pressed && gyro_x_angle > 10)
+				if (m_debounce_countdown == 0) // Debounce timeout
 				{
-					if (debounce_countdown == -1)
+					bool is_key_pressed = gyro_x_angle > 10 || gyro_x_angle < -10;
+
+					if (is_key_pressed && m_current_state == READY_PRESS)
 					{
-						debounce_countdown = 2;
+						err_code = send_key_scan_code(gyro_x_angle > 10 ? RIGHT_KEY : LEFT_KEY);
+						current_key_command = gyro_x_angle > 10 ? 10 : -10;
 					}
-					else if (debounce_countdown == 0)
+					else if (!is_key_pressed && m_current_state == READY_RELEASE)
 					{
-						err_code = send_key_scan_code(RIGHT_KEY);
-						m_key_last_state_pressed = true;
-						debounce_countdown = 1;
-						current_key_command = 10;
-					}
-				}
-				else if (!m_key_last_state_pressed && gyro_x_angle < -10)
-				{
-					if (debounce_countdown == -1)
-					{
-						debounce_countdown = 2;
-					}
-					else if (debounce_countdown == 0)
-					{
-						err_code = send_key_scan_code(LEFT_KEY);
-						m_key_last_state_pressed = true;
-						debounce_countdown = 1;
-						current_key_command = -10;
-					}
-				}
-				else if (!m_key_last_state_pressed && !(gyro_x_angle > 10 || gyro_x_angle < -10))
-				{
-					// Oops, debounce failed. Dropped below +-10 too fast
-					debounce_countdown = -1;
-				}
-				else if (m_key_last_state_pressed && !(gyro_x_angle > 10 || gyro_x_angle < -10))
-				{
-					if (debounce_countdown <= 0) {
 						err_code = send_key_scan_code(KEY_RELEASE);
-						m_key_last_state_pressed = false;
-						debounce_countdown = 2;
 						current_key_command = 0;
 					}
-				}
 
-				if (err_code != NRF_SUCCESS) {
-					NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
+					key_command_state_t next_state = states[m_current_state].next_state[is_key_pressed];
+
+					if (states[next_state].delay > 0) {
+						// Start countdown (add 1 to countdown if there are 15 or less elements remaining in the queue)
+						m_debounce_countdown = states[next_state].delay
+								+ (1 - nrf_queue_utilization_get(&m_sample_queue) / 15);
+					}
+
+					m_current_state = next_state;
+
+					if (err_code != NRF_SUCCESS) {
+						NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
+					}
 				}
 
 //				NRF_LOG_RAW_INFO("Complementary:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle));
