@@ -1,6 +1,9 @@
 #include <stdint.h>
 #include "nrf_queue.h"
 
+/**
+ * LSM6DS33 Register addresses
+ */
 #define WHO_AM_I_REG 0x0F
 #define OUT_TEMP_L_REG 0x20
 #define CTRL9_XL_ADDR 0x18
@@ -45,7 +48,12 @@ typedef struct
  */
 void read_sensor_blocking(sample_combo_t * p_new_sample, uint8_t sample_size);
 
-void configure(nrf_queue_t const * p_queue);
+/**
+ * @brief Function for initializing SPI driver and LSM6DS33 sensor control registers.
+ *
+ * @param  p_queue   Pointer to queue that will store SPI reads in non-blocking mode.
+ */
+void spi_sensor_init(nrf_queue_t const * p_queue);
 
 /**
  * @brief Function for bulk reading all sensor outputs, but return immediately (no blocking)
