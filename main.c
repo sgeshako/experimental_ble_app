@@ -736,7 +736,7 @@ int main(void)
 					gyro_x_angle_kalman = kalman_filter(gyro_x_rate, acc_y_angle, dt);
 				}
 
-				// Send Left/Right arrow key notification when angle goes above or below 10 degrees
+				// Send Left/Right arrow key notification when angle goes above or below +/-10 degrees
 				if (m_debounce_countdown == 0) // Debounce timeout
 				{
 					bool is_key_pressed = gyro_x_angle > 10 || gyro_x_angle < -10;
@@ -754,15 +754,17 @@ int main(void)
 
 					key_command_state_t next_state = states[m_current_state].next_state[is_key_pressed];
 
-					if (states[next_state].delay > 0) {
-						// Start countdown (add 1 to countdown if there are 15 or less elements remaining in the queue)
+					if (states[next_state].delay > 0)
+					{
+						// Start countdown (add 1 to countdown if there are less than 15 elements remaining in the queue)
 						m_debounce_countdown = states[next_state].delay
 								+ (1 - nrf_queue_utilization_get(&m_sample_queue) / 15);
 					}
 
 					m_current_state = next_state;
 
-					if (err_code != NRF_SUCCESS) {
+					if (err_code != NRF_SUCCESS)
+					{
 						NRF_LOG_INFO("Key notification failed %d\r\n", err_code);
 					}
 				}
@@ -773,9 +775,9 @@ int main(void)
 //				NRF_LOG_RAW_INFO("\t");
 //				NRF_LOG_RAW_INFO("Kalman:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_y_angle_kalman));
 //				NRF_LOG_RAW_INFO("\r\n")
-				NRF_LOG_RAW_INFO(NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
+				NRF_LOG_RAW_INFO("Angle[deg]:"NRF_LOG_FLOAT_MARKER, NRF_LOG_FLOAT(gyro_x_angle));
 				NRF_LOG_RAW_INFO("\t");
-				NRF_LOG_RAW_INFO("%d", current_key_command);
+				NRF_LOG_RAW_INFO("Command:%d", current_key_command);
 				NRF_LOG_RAW_INFO("\r\n");
 			}
 
