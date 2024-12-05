@@ -15,7 +15,7 @@ Bluetooth Low Energy (BLE) HID Keyboard: Communicates Left/Right arrow key event
 ├── main.c                  # Main application
 ├── filters.c               # Digital filter implementations
 ├── /spi/                   # SPI communication to sensor
-├── /pwm/                   # PWM dimming of LED indicates when advertising is active
+├── /pwm/                   # PWM dimming of LED indicates which advertising mode is active
 ├── /services/              # Custom BLE services
 ├── /hid/                   # BLE HID service and nRF Peer Manager functionality
 └── /pca10040/s132/n
@@ -32,7 +32,7 @@ Bluetooth Low Energy (BLE) HID Keyboard: Communicates Left/Right arrow key event
 3. SPI Driver is initialized and SPI write command configures inertial sensor operating mode. 
 4. Connect to HID Keyboard application from PC/Phone.
 5. Read/write GATT Services and characterstics on application using [Bluetooth LE Lab](https://apps.microsoft.com/detail/9n6jd37gwzc8?hl=en-US&gl=US) on Windows or [nRF Connect](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-mobile) on Mobile
-   - Write 0xF0 to custom IMS service starts 5ms Timer for sampling intertial sensor over SPI and writing samples to buffer.
+   - Write 0xF0 to custom IMS service starts 5ms Timer for sampling intertial sensor over SPI and storing the samples in a 20-element sized buffer.
    - Write 0x00 to custom IMS service stops Timer.
 6. Every 100ms (when buffer gets full) the HID application sends Left/Right key arrow commands based on sensor tilted above or below +/-25 degrees.
 
@@ -41,4 +41,7 @@ Bluetooth Low Energy (BLE) HID Keyboard: Communicates Left/Right arrow key event
    1. Fast mode with whitelist (LED goes from dim to bright quickly) for 30 seconds.
    2. Slow mode with whitelist (LED goes from bright to dim slowly) for 180 seconds.
    3. Idle mode. Application goes to sleep.
-   
+
+## Serial monitor screenshot(s)
+#### Rotating sensor left and right to demonstrate Left/Right key presses
+![Screenshot](https://github.com/sgeshako/static-images/blob/main/serial_plot_angle_command_with_description.png?raw=true "Serial Monitor screenshot")
