@@ -34,7 +34,7 @@ Bluetooth Low Energy (BLE) HID Keyboard: Communicates Left/Right arrow key event
 5. Read/write GATT Services and characterstics on application using [Bluetooth LE Lab](https://apps.microsoft.com/detail/9n6jd37gwzc8?hl=en-US&gl=US) on Windows or [nRF Connect](https://www.nordicsemi.com/Products/Development-tools/nRF-Connect-for-mobile) on Mobile
    - Write 0xF0 to custom IMS service starts 5ms Timer for sampling intertial sensor over SPI and storing the samples in a 20-element sized buffer.
    - Write 0x00 to custom IMS service stops Timer.
-6. Every 100ms (when buffer gets full) the HID application sends Left/Right key arrow commands based on sensor tilted above or below +/-25 degrees.
+6. Every 100ms (when buffer gets full) the HID application sends Left/Right key arrow commands based on sensor tilted above or below +/-10 degrees.
 
 #### Disconnect HID application by removing it from Bluetooth devices list on Windows:
 1. Application starts advertising:
